@@ -123,6 +123,28 @@ function getAllSettings(): Record<string, string> {
   return settings;
 }
 
+// Helper: interpolate variables in templates {{var}}
+function interpolateTemplate(template: string, lead: any, settings: Record<string, string>): string {
+  if (!template) return '';
+  const meta = JSON.parse(lead.metadata || '{}');
+  const vars: Record<string, string> = {
+    '{{business_name}}': lead.business_name || '',
+    '{{industry}}': lead.industry || '',
+    '{{location}}': lead.location || '',
+    '{{sender_name}}': settings.sender_name || 'Our Team',
+    '{{company_name}}': settings.company_name || 'AutoBound',
+    '{{service}}': settings.service_description || 'our AI services',
+    '{{booking_link}}': settings.booking_link || '',
+    '{{pain_points}}': (meta.pain_points || []).join(', ') || 'inefficiencies',
+    '{{services}}': (meta.services || []).join(', ') || 'operations',
+  };
+  let result = template;
+  for (const [key, value] of Object.entries(vars)) {
+    result = result.replace(new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
+  }
+  return result;
+}
+
 // Helper: calculate lead score (0-100)
 function calculateLeadScore(lead: any, enrichmentData: any): number {
   let score = 0;
@@ -658,12 +680,18 @@ Return ONLY JSON: { "subject": "...", "body": "..." }`;
         const bookingLink = settings.booking_link || '';
         const emailTone = settings.email_tone || 'friendly and professional';
 
-        const prompt = `Write a short cold email to ${lead.business_name} (${lead.industry}).
+        const prompt = `Write a high-converting cold email to ${lead.business_name} (${lead.industry}).
+Use the PAS (Problem-Agitate-Solve) framework:
+1. Hook: Mention a detail about their business.
+2. Problem: Identify a specific pain point from their industry or metadata.
+3. Agitate: Explain why this problem hurts their growth.
+4. Solve: Connect how ${serviceDesc} solves it.
+5. Low-Friction CTA: Ask if they are open to an exchange of ideas (e.g. "Worth a quick chat?").
+
 Services: ${JSON.stringify(meta.services || [])}. Pain points: ${JSON.stringify(meta.pain_points || [])}.
-Sender: ${senderName} from ${companyName}, selling ${serviceDesc}.
-Tone: ${emailTone}. Under 150 words. ${bookingLink ? `CTA: Book call at ${bookingLink}` : 'Soft CTA.'}
-Sign off: ${senderName}
-Return JSON: { "subject": "...", "body": "..." }`;
+Sender: ${senderName} from ${companyName}, Tone: ${emailTone}.
+Length: Under 120 words. Use \n for newlines.
+IMPORTANT: Return ONLY valid JSON. Format: { "subject": "...", "body": "..." }`;
 
         const resultText = await callGroq(prompt);
         const jsonStr = extractJSON(resultText || '');
@@ -886,12 +914,18 @@ Return JSON: { "subject": "...", "body": "..." }`;
           } else {
             // Auto-generate with AI
             const meta = JSON.parse(cl.metadata || '{}');
-            const prompt = `Write a short cold email to ${cl.business_name} (${cl.industry}).
+            const prompt = `Write a high-converting cold email to ${cl.business_name} (${cl.industry}).
+Use the PAS (Problem-Agitate-Solve) framework:
+1. Hook: Mention a detail about their business.
+2. Problem: Identify a specific pain point.
+3. Agitate: Explain why it's a bottleneck.
+4. Solve: Connect how ${settings.service_description || 'our services'} solves it.
+5. Low-Friction CTA: Interest-based question.
+
 Services: ${JSON.stringify(meta.services || [])}. Pain points: ${JSON.stringify(meta.pain_points || [])}.
-Sender: ${settings.sender_name || 'there'} from ${settings.company_name || 'our team'}, selling ${settings.service_description || 'our services'}.
-Tone: ${settings.email_tone || 'friendly'}. Under 150 words. ${settings.booking_link ? `CTA: Book call at ${settings.booking_link}` : 'Soft CTA.'}
-Sign off: ${settings.sender_name || 'Best'}
-Return JSON: { "subject": "...", "body": "..." }`;
+Sender: ${settings.sender_name || 'Our Team'} from ${settings.company_name || 'AutoBound'}, Tone: ${settings.email_tone || 'friendly'}.
+Length: Max 120 words. Use \n for newlines.
+IMPORTANT: Return ONLY valid JSON. Format: { "subject": "...", "body": "..." }`;
             const resultText = await callGroq(prompt);
             const jsonStr = extractJSON(resultText || '');
             if (jsonStr) {
@@ -1035,11 +1069,17 @@ Return JSON: { "subject": "...", "body": "..." }`;
             body = interpolateTemplate(body, cl, settings);
           } else {
             const meta = JSON.parse(cl.metadata || '{}');
-            const prompt = `Write a short cold email to ${cl.business_name} (${cl.industry}).
+            const prompt = `Write a high-converting cold email to ${cl.business_name} (${cl.industry}).
+Use the PAS (Problem-Agitate-Solve) framework:
+1. Hook: Specific mention of their company.
+2. Problem: Relevant pain point.
+3. Agitate: Detail the impact of the problem.
+4. Solve: How ${settings.service_description || 'our services'} fixes it.
+5. Low-Friction CTA: Interest-based question.
+
 Services: ${JSON.stringify(meta.services || [])}. Pain points: ${JSON.stringify(meta.pain_points || [])}.
-Sender: ${settings.sender_name || 'there'} from ${settings.company_name || 'our team'}, selling ${settings.service_description || 'our services'}.
-Tone: ${settings.email_tone || 'friendly'}. Under 150 words. ${settings.booking_link ? `CTA: Book call at ${settings.booking_link}` : 'Soft CTA.'}
-Sign off: ${settings.sender_name || 'Best'}
+Sender: ${settings.sender_name || 'Our Team'} from ${settings.company_name || 'AutoBound'}, Tone: ${settings.email_tone || 'friendly'}.
+Length: Under 120 words. Use \n for newlines.
 IMPORTANT: Return ONLY valid JSON. Use \\n for newlines in the body text. No markdown, no code fences.
 Format: { "subject": "...", "body": "..." }`;
             const resultText = await callGroq(prompt);
@@ -1141,9 +1181,16 @@ Format: { "subject": "...", "body": "..." }`;
           stmtUpdateLeadStatus.run('emailed', p.lead_id);
           results.sent++;
 
-          if (campaign.send_mode === 'drip' && i < selectedPreviews.length - 1) {
-            const delayMs = (campaign.drip_delay_minutes || 5) * 60 * 1000;
-            await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, 300000)));
+          // SAFETY DELAY:
+          // Drip mode: user-defined delay
+          // Bulk mode: mandatory 2s delay to prevent spam flagging
+          if (i < selectedPreviews.length - 1) {
+            const delayMs = campaign.send_mode === 'drip'
+              ? (campaign.drip_delay_minutes || 5) * 60 * 1000
+              : 2000; // 2s safety for bulk
+
+            // Cap drip delay at 5 mins for this session's testing if needed, but keep logic
+            await new Promise(resolve => setTimeout(resolve, delayMs));
           }
         } catch (err: any) {
           results.failed++;

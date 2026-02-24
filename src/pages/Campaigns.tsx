@@ -136,6 +136,27 @@ export default function Campaigns() {
         setPreviews(prev => prev.map(p => ({ ...p, selected: !allSelected })));
     };
 
+    const selectHighScorePreviews = (minScore: number) => {
+        setPreviews(prev => prev.map(p => ({ ...p, selected: p.lead_score >= minScore })));
+    };
+
+    const loadProvenStrategy = () => {
+        setName('High-Conversion Strategy');
+        setSubjectTemplate('Quick question for {{business_name}}');
+        setBodyTemplate(`Hi {{business_name}} team,
+
+I noticed you're in the {{industry}} space. Many companies in your niche tell us that {{pain_points}} is a constant bottleneck for growth.
+
+This usually leads to wasted resources and missed opportunities. We solve this by {{service}}, helping you streamline operations and focus on what matters.
+
+Worth a quick exchange of ideas?
+
+Best,
+{{sender_name}}`);
+        setSendMode('drip');
+        setDripDelay(10);
+    };
+
     const updatePreview = (idx: number, field: 'subject' | 'body', value: string) => {
         setPreviews(prev => prev.map((p, i) => i === idx ? { ...p, [field]: value } : p));
     };
@@ -272,7 +293,13 @@ export default function Campaigns() {
                     <button onClick={() => setView('list')} className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 mb-4">
                         <ChevronLeft className="w-4 h-4" /> Back to Campaigns
                     </button>
-                    <h1 className="text-2xl font-bold text-slate-900 mb-6">Create Campaign</h1>
+                    <div className="flex items-center justify-between mb-6">
+                        <h1 className="text-2xl font-bold text-slate-900">Create Campaign</h1>
+                        <button onClick={loadProvenStrategy}
+                            className="text-xs px-3 py-1.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg hover:bg-amber-100 transition flex items-center gap-2 font-medium">
+                            <Zap className="w-3.5 h-3.5" /> Load High-Conversion Strategy
+                        </button>
+                    </div>
 
                     <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
                         <div>
@@ -522,6 +549,9 @@ export default function Campaigns() {
                                 <p className="text-xs text-slate-500 mt-0.5">{previews.filter(p => p.selected).length} of {previews.length} selected to send</p>
                             </div>
                             <div className="flex items-center gap-3">
+                                <button onClick={() => selectHighScorePreviews(70)} className="text-xs px-2 py-1 bg-green-50 text-green-700 border border-green-200 rounded hover:bg-green-100 transition">
+                                    Select Hot Leads (70+)
+                                </button>
                                 <button onClick={toggleAllPreviews} className="text-sm text-slate-600 hover:text-indigo-600 flex items-center gap-1">
                                     {previews.every(p => p.selected) ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
                                     {previews.every(p => p.selected) ? 'Deselect All' : 'Select All'}
