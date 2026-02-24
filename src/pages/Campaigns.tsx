@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { api, Campaign, CampaignDetail, Lead } from "../lib/api";
+import { api, Campaign, CampaignDetail, Lead, EmailPreview } from "../lib/api";
 import {
     Megaphone, Plus, Send, Clock, Users, Check, X, Trash2,
-    ChevronLeft, AlertCircle, Zap, Timer
+    ChevronLeft, AlertCircle, Zap, Timer, Eye, Edit3, CheckSquare, Square
 } from "lucide-react";
 
 type View = 'list' | 'create' | 'detail';
@@ -27,6 +27,12 @@ export default function Campaigns() {
     // Lead picker
     const [showLeadPicker, setShowLeadPicker] = useState(false);
     const [selectedLeadIds, setSelectedLeadIds] = useState<number[]>([]);
+
+    // Preview
+    const [showPreview, setShowPreview] = useState(false);
+    const [previews, setPreviews] = useState<EmailPreview[]>([]);
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [editingIdx, setEditingIdx] = useState<number | null>(null);
 
     const fetchCampaigns = useCallback(async () => {
         try { setCampaigns(await api.getCampaigns()); } catch { }
@@ -88,20 +94,50 @@ export default function Campaigns() {
         } catch (err: any) { setError(err.message); }
     };
 
-    const handleSend = async () => {
+    // ===== PREVIEW =====
+    const handlePreview = async () => {
         if (!selectedCampaign) return;
         const pending = selectedCampaign.leads.filter(l => l.status === 'pending').length;
-        if (pending === 0) return setError("No pending leads to send to");
-        if (!confirm(`Send campaign to ${pending} leads? ${selectedCampaign.send_mode === 'drip' ? `(Drip: ${selectedCampaign.drip_delay_minutes} min between emails)` : '(Bulk: all at once)'}`)) return;
+        if (pending === 0) return setError("No pending leads to preview");
+        setPreviewLoading(true); setError(null);
+        try {
+            const res = await api.previewCampaign(selectedCampaign.id);
+            setPreviews(res.previews);
+            setShowPreview(true);
+            setEditingIdx(null);
+        } catch (err: any) { setError(err.message); }
+        finally { setPreviewLoading(false); }
+    };
+
+    const handleSendPreviews = async () => {
+        if (!selectedCampaign) return;
+        const selected = previews.filter(p => p.selected);
+        if (selected.length === 0) return setError("No emails selected to send");
+        if (!confirm(`Send ${selected.length} email${selected.length > 1 ? 's' : ''}? ${selectedCampaign.send_mode === 'drip' ? `(Drip: ${selectedCampaign.drip_delay_minutes} min delay)` : '(Bulk)'}`)) return;
 
         setSending(true); setError(null);
         try {
-            const res = await api.sendCampaign(selectedCampaign.id);
-            setSuccess(`Sent: ${res.sent}, Failed: ${res.failed}${res.errors.length > 0 ? ` | Errors: ${res.errors.join(', ')}` : ''}`);
+            const res = await api.sendCampaignPreviews(selectedCampaign.id, previews);
+            setSuccess(`Sent: ${res.sent}, Failed: ${res.failed}${res.errors.length > 0 ? ` | ${res.errors.join(', ')}` : ''}`);
+            setShowPreview(false);
+            setPreviews([]);
             await fetchCampaignDetail(selectedCampaign.id);
             await fetchCampaigns();
         } catch (err: any) { setError(err.message); }
         finally { setSending(false); }
+    };
+
+    const togglePreviewSelect = (idx: number) => {
+        setPreviews(prev => prev.map((p, i) => i === idx ? { ...p, selected: !p.selected } : p));
+    };
+
+    const toggleAllPreviews = () => {
+        const allSelected = previews.every(p => p.selected);
+        setPreviews(prev => prev.map(p => ({ ...p, selected: !allSelected })));
+    };
+
+    const updatePreview = (idx: number, field: 'subject' | 'body', value: string) => {
+        setPreviews(prev => prev.map((p, i) => i === idx ? { ...p, [field]: value } : p));
     };
 
     const handleOpenLeadPicker = async () => {
@@ -144,7 +180,6 @@ export default function Campaigns() {
         { var: '{{services}}', desc: 'Lead services' },
     ];
 
-    // Clear messages after 5s
     useEffect(() => {
         if (success) { const t = setTimeout(() => setSuccess(null), 5000); return () => clearTimeout(t); }
     }, [success]);
@@ -154,7 +189,6 @@ export default function Campaigns() {
 
     return (
         <div className="p-8 max-w-6xl mx-auto">
-            {/* Alerts */}
             {error && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700 text-sm">
                     <AlertCircle className="w-4 h-4 flex-shrink-0" /> {error}
@@ -254,7 +288,7 @@ export default function Campaigns() {
                                     <button onClick={() => setSendMode('bulk')}
                                         className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition flex items-center justify-center gap-2
                     ${sendMode === 'bulk' ? 'bg-indigo-50 border-indigo-300 text-indigo-700' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}>
-                                        <Zap className="w-4 h-4" /> Bulk (All at once)
+                                        <Zap className="w-4 h-4" /> Bulk
                                     </button>
                                     <button onClick={() => setSendMode('drip')}
                                         className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition flex items-center justify-center gap-2
@@ -265,7 +299,7 @@ export default function Campaigns() {
                             </div>
                             {sendMode === 'drip' && (
                                 <div>
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Delay Between Emails (minutes)</label>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Delay (minutes)</label>
                                     <input type="number" value={dripDelay} onChange={e => setDripDelay(parseInt(e.target.value) || 5)} min={1} max={60}
                                         className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
                                 </div>
@@ -277,18 +311,17 @@ export default function Campaigns() {
                             <input value={subjectTemplate} onChange={e => setSubjectTemplate(e.target.value)}
                                 placeholder="e.g. Quick question about {{business_name}}"
                                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
-                            <p className="text-xs text-slate-400 mt-1">Leave blank to auto-generate with AI for each lead</p>
+                            <p className="text-xs text-slate-400 mt-1">Leave blank to auto-generate with AI</p>
                         </div>
 
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">Body Template</label>
                             <textarea value={bodyTemplate} onChange={e => setBodyTemplate(e.target.value)} rows={6}
-                                placeholder="Hi {{business_name}},&#10;&#10;I noticed you're in the {{industry}} space and thought..."
+                                placeholder="Hi {{business_name}},&#10;&#10;I noticed you're in the {{industry}} space..."
                                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 resize-none" />
-                            <p className="text-xs text-slate-400 mt-1">Leave blank to auto-generate with AI for each lead</p>
+                            <p className="text-xs text-slate-400 mt-1">Leave blank to auto-generate with AI</p>
                         </div>
 
-                        {/* Template variable reference */}
                         <div className="bg-slate-50 rounded-lg p-4">
                             <p className="text-xs font-medium text-slate-600 mb-2">Available Template Variables:</p>
                             <div className="grid grid-cols-3 gap-1">
@@ -323,7 +356,7 @@ export default function Campaigns() {
                                 <span className={`px-2.5 py-0.5 rounded text-xs font-medium ${statusColor(selectedCampaign.status)}`}>{selectedCampaign.status}</span>
                                 {selectedCampaign.send_mode === 'drip' && (
                                     <span className="px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 flex items-center gap-1">
-                                        <Timer className="w-3 h-3" /> Drip ({selectedCampaign.drip_delay_minutes}m delay)
+                                        <Timer className="w-3 h-3" /> Drip ({selectedCampaign.drip_delay_minutes}m)
                                     </span>
                                 )}
                             </div>
@@ -333,9 +366,9 @@ export default function Campaigns() {
                                 className="px-4 py-2 bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition text-sm font-medium flex items-center gap-2">
                                 <Users className="w-4 h-4" /> Add Leads
                             </button>
-                            <button onClick={handleSend} disabled={sending || selectedCampaign.leads.filter(l => l.status === 'pending').length === 0}
-                                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium flex items-center gap-2 disabled:opacity-50">
-                                {sending ? <><Clock className="w-4 h-4 animate-spin" /> Sending...</> : <><Send className="w-4 h-4" /> Send Campaign</>}
+                            <button onClick={handlePreview} disabled={previewLoading || selectedCampaign.leads.filter(l => l.status === 'pending').length === 0}
+                                className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition text-sm font-medium flex items-center gap-2 disabled:opacity-50">
+                                {previewLoading ? <><Clock className="w-4 h-4 animate-spin" /> Generating...</> : <><Eye className="w-4 h-4" /> Preview Emails</>}
                             </button>
                             <button onClick={() => handleDelete(selectedCampaign.id)}
                                 className="px-3 py-2 text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition text-sm">
@@ -369,9 +402,12 @@ export default function Campaigns() {
                             {selectedCampaign.body_template && (
                                 <pre className="text-sm text-slate-600 whitespace-pre-wrap bg-slate-50 p-3 rounded-lg">{selectedCampaign.body_template}</pre>
                             )}
-                            {!selectedCampaign.subject_template && !selectedCampaign.body_template && (
-                                <p className="text-sm text-slate-400 italic">No template — emails will be auto-generated with AI</p>
-                            )}
+                        </div>
+                    )}
+                    {!selectedCampaign.subject_template && !selectedCampaign.body_template && (
+                        <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl border border-indigo-100 p-4 mb-6 flex items-center gap-3">
+                            <Zap className="w-5 h-5 text-indigo-500" />
+                            <p className="text-sm text-indigo-700">No template set — emails will be <strong>AI-generated</strong> uniquely for each lead. Click "Preview Emails" to see them before sending.</p>
                         </div>
                     )}
 
@@ -400,7 +436,7 @@ export default function Campaigns() {
                                     {selectedCampaign.leads.map(cl => (
                                         <tr key={cl.id} className="hover:bg-slate-50">
                                             <td className="px-5 py-3 font-medium text-slate-900">{cl.business_name}</td>
-                                            <td className="px-5 py-3 text-slate-600">{cl.email || '—'}</td>
+                                            <td className="px-5 py-3 text-slate-600 text-xs">{cl.email || <span className="text-slate-400 italic">no email</span>}</td>
                                             <td className="px-5 py-3">
                                                 <span className={`font-medium ${cl.lead_score >= 60 ? 'text-green-600' : cl.lead_score >= 30 ? 'text-amber-600' : 'text-slate-500'}`}>
                                                     {cl.lead_score}
@@ -466,6 +502,108 @@ export default function Campaigns() {
                                 <button onClick={handleAddLeads} disabled={loading || selectedLeadIds.length === 0}
                                     className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium disabled:opacity-50">
                                     {loading ? 'Adding...' : `Add ${selectedLeadIds.length} Leads`}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ======= EMAIL PREVIEW MODAL ======= */}
+            {showPreview && (
+                <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-xl shadow-2xl w-[900px] max-h-[85vh] flex flex-col">
+                        {/* Header */}
+                        <div className="p-5 border-b border-slate-200 flex items-center justify-between">
+                            <div>
+                                <h3 className="font-bold text-lg text-slate-900 flex items-center gap-2">
+                                    <Eye className="w-5 h-5 text-amber-500" /> Email Preview
+                                </h3>
+                                <p className="text-xs text-slate-500 mt-0.5">{previews.filter(p => p.selected).length} of {previews.length} selected to send</p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <button onClick={toggleAllPreviews} className="text-sm text-slate-600 hover:text-indigo-600 flex items-center gap-1">
+                                    {previews.every(p => p.selected) ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+                                    {previews.every(p => p.selected) ? 'Deselect All' : 'Select All'}
+                                </button>
+                                <button onClick={() => { setShowPreview(false); setPreviews([]); }} className="text-slate-400 hover:text-slate-600">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Email cards */}
+                        <div className="flex-1 overflow-auto p-5 space-y-4">
+                            {previews.map((preview, idx) => (
+                                <div key={preview.lead_id} className={`border rounded-xl transition ${preview.selected ? 'border-indigo-200 bg-white' : 'border-slate-200 bg-slate-50 opacity-60'}`}>
+                                    {/* Card header */}
+                                    <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+                                        <div className="flex items-center gap-3">
+                                            <button onClick={() => togglePreviewSelect(idx)}>
+                                                {preview.selected
+                                                    ? <CheckSquare className="w-4 h-4 text-indigo-600" />
+                                                    : <Square className="w-4 h-4 text-slate-400" />
+                                                }
+                                            </button>
+                                            <div>
+                                                <p className="font-semibold text-sm text-slate-900">{preview.business_name}</p>
+                                                <p className="text-xs text-slate-500">{preview.email || 'No email'} · {preview.industry} · Score: {preview.lead_score}</p>
+                                            </div>
+                                        </div>
+                                        <button onClick={() => setEditingIdx(editingIdx === idx ? null : idx)}
+                                            className={`text-xs px-2.5 py-1 rounded-lg border flex items-center gap-1 transition ${editingIdx === idx ? 'bg-indigo-50 border-indigo-300 text-indigo-700' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
+                                            <Edit3 className="w-3 h-3" /> {editingIdx === idx ? 'Done' : 'Edit'}
+                                        </button>
+                                    </div>
+
+                                    {/* Email content */}
+                                    <div className="p-4">
+                                        {editingIdx === idx ? (
+                                            <div className="space-y-2">
+                                                <div>
+                                                    <label className="text-xs font-medium text-slate-500">Subject</label>
+                                                    <input value={preview.subject} onChange={e => updatePreview(idx, 'subject', e.target.value)}
+                                                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm mt-1" />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs font-medium text-slate-500">Body</label>
+                                                    <textarea value={preview.body} onChange={e => updatePreview(idx, 'body', e.target.value)}
+                                                        rows={6} className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm mt-1 resize-none" />
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <p className="text-sm font-medium text-slate-800 mb-2">
+                                                    <span className="text-slate-400 text-xs mr-1">Subject:</span> {preview.subject}
+                                                </p>
+                                                <div className="text-sm text-slate-600 whitespace-pre-wrap bg-slate-50 p-3 rounded-lg max-h-32 overflow-auto">
+                                                    {preview.body}
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Footer */}
+                        <div className="p-5 border-t border-slate-200 flex items-center justify-between bg-slate-50 rounded-b-xl">
+                            <p className="text-sm text-slate-600">
+                                <strong>{previews.filter(p => p.selected).length}</strong> emails ready to send
+                                {selectedCampaign?.send_mode === 'drip' && (
+                                    <span className="ml-2 text-purple-600">
+                                        <Timer className="w-3 h-3 inline" /> {selectedCampaign.drip_delay_minutes}m delay between each
+                                    </span>
+                                )}
+                            </p>
+                            <div className="flex gap-2">
+                                <button onClick={() => { setShowPreview(false); setPreviews([]); }}
+                                    className="px-4 py-2 border border-slate-300 rounded-lg text-slate-600 hover:bg-white text-sm">
+                                    Cancel
+                                </button>
+                                <button onClick={handleSendPreviews} disabled={sending || previews.filter(p => p.selected).length === 0}
+                                    className="px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium flex items-center gap-2 disabled:opacity-50">
+                                    {sending ? <><Clock className="w-4 h-4 animate-spin" /> Sending...</> : <><Send className="w-4 h-4" /> Send {previews.filter(p => p.selected).length} Emails</>}
                                 </button>
                             </div>
                         </div>

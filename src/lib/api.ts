@@ -84,6 +84,17 @@ export interface CampaignDetail extends Campaign {
   leads: CampaignLead[];
 }
 
+export interface EmailPreview {
+  lead_id: number;
+  business_name: string;
+  email?: string;
+  industry: string;
+  lead_score: number;
+  subject: string;
+  body: string;
+  selected: boolean;
+}
+
 class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -186,6 +197,12 @@ export const api = {
   sendCampaign: (campaignId: number): Promise<{ success: boolean; sent: number; failed: number; errors: string[] }> => {
     return post(`/api/campaigns/${campaignId}/send`, {});
   },
+  previewCampaign: (campaignId: number): Promise<{ previews: EmailPreview[]; message?: string }> => {
+    return post(`/api/campaigns/${campaignId}/preview`, {});
+  },
+  sendCampaignPreviews: (campaignId: number, previews: EmailPreview[]): Promise<{ success: boolean; sent: number; failed: number; errors: string[] }> => {
+    return post(`/api/campaigns/${campaignId}/send-previews`, { previews });
+  },
 
   // Zoho
   connectZoho: (apiKey: string, fromEmail?: string): Promise<{ success: boolean }> => {
@@ -195,4 +212,3 @@ export const api = {
     return request('/api/zoho/status');
   },
 };
-

@@ -996,6 +996,167 @@ Return JSON: { "subject": "...", "body": "..." }`;
     });
   });
 
+  // ===== CAMPAIGN PREVIEW =====
+  app.post("/api/campaigns/:id/preview", async (req, res) => {
+    const campaignId = req.params.id;
+    try {
+      const campaign = db.prepare("SELECT * FROM campaigns WHERE id = ?").get(campaignId) as any;
+      if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+
+      const pendingLeads = db.prepare(`
+        SELECT cl.*, l.* FROM campaign_leads cl
+        JOIN leads l ON l.id = cl.lead_id
+        WHERE cl.campaign_id = ? AND cl.status = 'pending'
+        ORDER BY l.lead_score DESC
+      `).all(campaignId) as any[];
+
+      if (pendingLeads.length === 0) return res.json({ previews: [], message: "No pending leads" });
+
+      const settings = getAllSettings();
+      const previews = [];
+
+      for (const cl of pendingLeads) {
+        try {
+          let subject = campaign.subject_template;
+          let body = campaign.body_template;
+
+          if (subject && body) {
+            subject = interpolateTemplate(subject, cl, settings);
+            body = interpolateTemplate(body, cl, settings);
+          } else {
+            const meta = JSON.parse(cl.metadata || '{}');
+            const prompt = `Write a short cold email to ${cl.business_name} (${cl.industry}).
+Services: ${JSON.stringify(meta.services || [])}. Pain points: ${JSON.stringify(meta.pain_points || [])}.
+Sender: ${settings.sender_name || 'there'} from ${settings.company_name || 'our team'}, selling ${settings.service_description || 'our services'}.
+Tone: ${settings.email_tone || 'friendly'}. Under 150 words. ${settings.booking_link ? `CTA: Book call at ${settings.booking_link}` : 'Soft CTA.'}
+Sign off: ${settings.sender_name || 'Best'}
+Return JSON: { "subject": "...", "body": "..." }`;
+            const resultText = await callGroq(prompt);
+            const jsonStr = extractJSON(resultText || '');
+            if (jsonStr) {
+              const parsed = JSON.parse(jsonStr);
+              subject = parsed.subject;
+              body = parsed.body;
+            } else {
+              subject = `Quick question for ${cl.business_name}`;
+              body = "(AI generation failed — edit this manually)";
+            }
+          }
+
+          previews.push({
+            lead_id: cl.lead_id,
+            business_name: cl.business_name,
+            email: cl.email,
+            industry: cl.industry,
+            lead_score: cl.lead_score,
+            subject,
+            body,
+            selected: true,
+          });
+        } catch (err: any) {
+          previews.push({
+            lead_id: cl.lead_id,
+            business_name: cl.business_name,
+            email: cl.email,
+            industry: cl.industry,
+            lead_score: cl.lead_score,
+            subject: `Follow up with ${cl.business_name}`,
+            body: `(Error generating: ${err.message})`,
+            selected: true,
+          });
+        }
+      }
+
+      res.json({ previews });
+    } catch (error: any) {
+      console.error("Preview Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Send campaign with pre-edited previews
+  app.post("/api/campaigns/:id/send-previews", async (req, res) => {
+    const campaignId = req.params.id;
+    const { previews } = req.body as { previews: { lead_id: number; subject: string; body: string; selected: boolean }[] };
+    if (!previews || !Array.isArray(previews)) return res.status(400).json({ error: "Previews array required" });
+
+    try {
+      const campaign = db.prepare("SELECT * FROM campaigns WHERE id = ?").get(campaignId) as any;
+      if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+
+      const settings = getAllSettings();
+      const transporter = getMailTransporter();
+      const zohoKey = settings.zoho_api_key;
+      const results = { sent: 0, failed: 0, errors: [] as string[] };
+      const selectedPreviews = previews.filter(p => p.selected);
+
+      db.prepare("UPDATE campaigns SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(campaignId);
+
+      for (let i = 0; i < selectedPreviews.length; i++) {
+        const p = selectedPreviews[i];
+        const lead = db.prepare("SELECT * FROM leads WHERE id = ?").get(p.lead_id) as any;
+        if (!lead) continue;
+
+        try {
+          let emailSent = false;
+          if (zohoKey && lead.email) {
+            try {
+              const zohoRes = await fetch("https://api.zeptomail.com/v1.1/email", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Zoho-encrtoken ${zohoKey}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  from: { address: settings.smtp_user || settings.zoho_from_email || "noreply@example.com" },
+                  to: [{ email_address: { address: lead.email } }],
+                  subject: p.subject,
+                  textbody: p.body,
+                }),
+              });
+              emailSent = zohoRes.ok;
+            } catch { }
+          } else if (transporter && lead.email) {
+            try {
+              await transporter.sendMail({ from: settings.smtp_user, to: lead.email, subject: p.subject, text: p.body });
+              emailSent = true;
+            } catch { }
+          }
+
+          const fullContent = `Subject: ${p.subject}\n\n${p.body}`;
+          stmtInsertMessage.run(p.lead_id, 'outbound', fullContent, 'campaign');
+          db.prepare("UPDATE campaign_leads SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND lead_id = ?")
+            .run(campaignId, p.lead_id);
+          stmtUpdateLeadStatus.run('emailed', p.lead_id);
+          results.sent++;
+
+          if (campaign.send_mode === 'drip' && i < selectedPreviews.length - 1) {
+            const delayMs = (campaign.drip_delay_minutes || 5) * 60 * 1000;
+            await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, 300000)));
+          }
+        } catch (err: any) {
+          results.failed++;
+          results.errors.push(`${lead.business_name}: ${err.message}`);
+          db.prepare("UPDATE campaign_leads SET status = 'failed' WHERE campaign_id = ? AND lead_id = ?")
+            .run(campaignId, p.lead_id);
+        }
+      }
+
+      db.prepare(`
+        UPDATE campaigns SET
+          total_sent = (SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND status = 'sent'),
+          status = CASE WHEN (SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND status = 'pending') = 0 THEN 'completed' ELSE status END,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(campaignId, campaignId, campaignId);
+
+      res.json({ success: true, ...results });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+
   // Vite middleware (dev) or static serving (production)
   if (process.env.NODE_ENV === "production") {
     const distPath = path.join(__dirname, "dist");
