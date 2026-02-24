@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { initDB } from "./src/db/index.js";
 import db from "./src/db/index.js";
-import { GoogleGenAI } from "@google/genai";
+
 import * as cheerio from "cheerio";
 import nodemailer from "nodemailer";
 
@@ -70,13 +70,30 @@ const stmtUpdateLead = db.prepare(`
   phone = COALESCE(?, phone), status = COALESCE(?, status), updated_at = CURRENT_TIMESTAMP WHERE id = ?
 `);
 
-function getGenAIClient() {
-  const rawApiKey = process.env.GEMINI_API_KEY;
-  if (!rawApiKey || rawApiKey === "MY_GEMINI_API_KEY") {
-    throw new Error("Invalid API Key: Please set GEMINI_API_KEY in your environment variables or secrets.");
+async function callGroq(prompt: string): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey || apiKey === "YOUR_GROQ_API_KEY") {
+    throw new Error("Invalid API Key: Please set GROQ_API_KEY in your environment variables.");
   }
-  const apiKey = rawApiKey.trim();
-  return new GoogleGenAI({ apiKey });
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey.trim()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7,
+      max_tokens: 4096,
+    }),
+  });
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Groq API error (${response.status}): ${err}`);
+  }
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "";
 }
 
 // Helper: get all settings as object
@@ -284,7 +301,6 @@ async function startServer() {
     const batches = Math.ceil(totalCount / batchSize);
 
     try {
-      const ai = getGenAIClient();
       let totalAdded = 0;
       const allRaw: any[] = [];
 
@@ -305,15 +321,7 @@ Return ONLY a JSON array of objects with these fields:
 
 Only include real businesses with real websites. No duplicates.`;
 
-        const result = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
-          config: {
-            tools: [{ googleSearch: {} }]
-          }
-        });
-
-        const text = result.text;
+        const text = await callGroq(prompt);
         if (!text) continue;
 
         const jsonMatch = text.match(/\[.*\]/s);
@@ -360,7 +368,6 @@ Only include real businesses with real websites. No duplicates.`;
       const $ = cheerio.load(html);
       const textContent = $('body').text().replace(/\s+/g, ' ').substring(0, 10000);
 
-      const ai = getGenAIClient();
       const prompt = `Analyze this website content for a ${lead.industry} business called "${lead.business_name}":
 "${textContent}"
 
@@ -376,12 +383,7 @@ Extract the following as JSON:
   "tech_savviness": "low|medium|high"
 }`;
 
-      const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt
-      });
-
-      const analysisText = result.text;
+      const analysisText = await callGroq(prompt);
       const jsonMatch = analysisText?.match(/\{.*\}/s);
 
       if (jsonMatch) {
@@ -424,16 +426,11 @@ Extract the following as JSON:
         const $ = cheerio.load(html);
         const textContent = $('body').text().replace(/\s+/g, ' ').substring(0, 10000);
 
-        const ai = getGenAIClient();
         const prompt = `Analyze this website for ${lead.business_name} (${lead.industry}): "${textContent}"
 Extract JSON: { "services": [], "tone": "string", "pain_points": [], "strengths": [], "contact_email": "or null", "contact_phone": "or null", "company_size": "small|medium|large", "tech_savviness": "low|medium|high" }`;
 
-        const result = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt
-        });
-
-        const jsonMatch = result.text?.match(/\{.*\}/s);
+        const resultText = await callGroq(prompt);
+        const jsonMatch = resultText?.match(/\{.*\}/s);
         if (jsonMatch) {
           const data = JSON.parse(jsonMatch[0]);
           const existingMeta = JSON.parse(lead.metadata || '{}');
@@ -467,7 +464,7 @@ Extract JSON: { "services": [], "tone": "string", "pain_points": [], "strengths"
     try {
       const meta = JSON.parse(lead.metadata || '{}');
       const settings = getAllSettings();
-      const ai = getGenAIClient();
+
 
       const senderName = settings.sender_name || 'there';
       const companyName = settings.company_name || 'our team';
@@ -507,12 +504,8 @@ RULES:
 
 Return ONLY JSON: { "subject": "...", "body": "..." }`;
 
-      const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt
-      });
-
-      const jsonMatch = result.text?.match(/\{.*\}/s);
+      const resultText = await callGroq(prompt);
+      const jsonMatch = resultText?.match(/\{.*\}/s);
       if (jsonMatch) {
         const emailContent = JSON.parse(jsonMatch[0]);
         res.json(emailContent);
@@ -540,7 +533,6 @@ Return ONLY JSON: { "subject": "...", "body": "..." }`;
       const lastEmail = messages.filter((m: any) => m.direction === 'outbound').pop();
       const followUpNum = (lead.follow_up_count || 0) + 1;
 
-      const ai = getGenAIClient();
       const bookingLink = settings.booking_link || '';
       const senderName = settings.sender_name || 'there';
 
@@ -559,12 +551,8 @@ RULES:
 
 Return ONLY JSON: { "subject": "...", "body": "..." }`;
 
-      const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt
-      });
-
-      const jsonMatch = result.text?.match(/\{.*\}/s);
+      const resultText = await callGroq(prompt);
+      const jsonMatch = resultText?.match(/\{.*\}/s);
       if (jsonMatch) {
         const emailContent = JSON.parse(jsonMatch[0]);
         res.json({ ...emailContent, followUpNumber: followUpNum });
@@ -637,7 +625,7 @@ Return ONLY JSON: { "subject": "...", "body": "..." }`;
 
     const results = { success: 0, failed: 0, errors: [] as string[] };
     const settings = getAllSettings();
-    const ai = getGenAIClient();
+
 
     for (const id of leadIds) {
       try {
@@ -658,12 +646,8 @@ Tone: ${emailTone}. Under 150 words. ${bookingLink ? `CTA: Book call at ${bookin
 Sign off: ${senderName}
 Return JSON: { "subject": "...", "body": "..." }`;
 
-        const result = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt
-        });
-
-        const jsonMatch = result.text?.match(/\{.*\}/s);
+        const resultText = await callGroq(prompt);
+        const jsonMatch = resultText?.match(/\{.*\}/s);
         if (jsonMatch) {
           const emailContent = JSON.parse(jsonMatch[0]);
           const fullContent = `Subject: ${emailContent.subject}\n\n${emailContent.body}`;
