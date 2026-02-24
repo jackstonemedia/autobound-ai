@@ -102,7 +102,17 @@ function extractJSON(text: string, type: 'object' | 'array' = 'object'): string 
   let cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
   const pattern = type === 'array' ? /\[.*\]/s : /\{.*\}/s;
   const match = cleaned.match(pattern);
-  return match ? match[0] : null;
+  if (!match) return null;
+
+  let jsonStr = match[0];
+  // Sanitize literal control characters that break JSON.parse
+  // This replaces real newlines/tabs with escaped versions (\n, \t)
+  return jsonStr
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t')
+    .replace(/\f/g, '\\f')
+    .replace(/\b/g, '\\b');
 }
 
 // Helper: get all settings as object
@@ -1030,7 +1040,8 @@ Services: ${JSON.stringify(meta.services || [])}. Pain points: ${JSON.stringify(
 Sender: ${settings.sender_name || 'there'} from ${settings.company_name || 'our team'}, selling ${settings.service_description || 'our services'}.
 Tone: ${settings.email_tone || 'friendly'}. Under 150 words. ${settings.booking_link ? `CTA: Book call at ${settings.booking_link}` : 'Soft CTA.'}
 Sign off: ${settings.sender_name || 'Best'}
-Return JSON: { "subject": "...", "body": "..." }`;
+IMPORTANT: Return ONLY valid JSON. Use \\n for newlines in the body text. No markdown, no code fences.
+Format: { "subject": "...", "body": "..." }`;
             const resultText = await callGroq(prompt);
             const jsonStr = extractJSON(resultText || '');
             if (jsonStr) {
