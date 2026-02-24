@@ -712,8 +712,15 @@ Return JSON: { "subject": "...", "body": "..." }`;
     }
   });
 
-  // Vite middleware
-  if (process.env.NODE_ENV !== "production") {
+  // Vite middleware (dev) or static serving (production)
+  if (process.env.NODE_ENV === "production") {
+    const path = await import("path");
+    const distPath = path.resolve("dist");
+    app.use(express.static(distPath));
+    app.get("*", (_req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  } else {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
