@@ -1,11 +1,16 @@
 import "dotenv/config";
 import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { initDB } from "./src/db/index.js";
 import db from "./src/db/index.js";
 import { GoogleGenAI } from "@google/genai";
 import * as cheerio from "cheerio";
 import nodemailer from "nodemailer";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Initialize DB
 initDB();
@@ -114,7 +119,7 @@ function getMailTransporter() {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000');
 
   app.use(express.json());
 
@@ -714,8 +719,7 @@ Return JSON: { "subject": "...", "body": "..." }`;
 
   // Vite middleware (dev) or static serving (production)
   if (process.env.NODE_ENV === "production") {
-    const path = await import("path");
-    const distPath = path.resolve("dist");
+    const distPath = path.join(__dirname, "dist");
     app.use(express.static(distPath));
     app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
