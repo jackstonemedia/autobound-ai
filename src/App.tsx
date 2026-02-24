@@ -11,6 +11,7 @@ import Leads from "./pages/Leads";
 import LeadDetail from "./pages/LeadDetail";
 import Settings from "./pages/Settings";
 import Conversations from "./pages/Conversations";
+import Campaigns from "./pages/Campaigns";
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="discovery" element={<Discovery />} />
           <Route path="leads" element={<Leads />} />
           <Route path="leads/:id" element={<LeadDetail />} />
+          <Route path="campaigns" element={<Campaigns />} />
           <Route path="conversations" element={<Conversations />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<div className="p-8">Page not found</div>} />

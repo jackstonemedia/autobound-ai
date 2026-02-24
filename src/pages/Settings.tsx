@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../lib/api";
-import { Loader2, CheckCircle, AlertCircle, Settings2, User, Mail, Link2, MessageSquare } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, Settings2, User, Mail, Link2, MessageSquare, Plug } from "lucide-react";
 
 interface AppSettings {
   // Your Business
@@ -38,6 +38,10 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [zohoKey, setZohoKey] = useState('');
+  const [zohoFrom, setZohoFrom] = useState('');
+  const [zohoConnected, setZohoConnected] = useState(false);
+  const [zohoSaving, setZohoSaving] = useState(false);
 
   useEffect(() => {
     api.getSettings()
@@ -58,6 +62,10 @@ export default function Settings() {
       })
       .catch(() => { })
       .finally(() => setLoading(false));
+    api.getZohoStatus().then(s => {
+      setZohoConnected(s.connected);
+      if (s.fromEmail) setZohoFrom(s.fromEmail);
+    }).catch(() => { });
   }, []);
 
   const handleSave = async () => {
@@ -171,6 +179,35 @@ export default function Settings() {
         <Input label="Password" placeholder="••••••••" value={settings.smtp_pass} onChange={v => update('smtp_pass', v)} type="password" />
       </Section>
 
+      {/* ZOHO INTEGRATION */}
+      <Section icon={<Plug className="w-4 h-4" />} title="Zoho Integration" description="Connect Zoho ZeptoMail to send campaign emails via Zoho.">
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 mb-2">
+            <div className={`w-2.5 h-2.5 rounded-full ${zohoConnected ? 'bg-green-500' : 'bg-slate-300'}`} />
+            <span className={`text-sm font-medium ${zohoConnected ? 'text-green-700' : 'text-slate-500'}`}>
+              {zohoConnected ? 'Connected' : 'Not Connected'}
+            </span>
+          </div>
+          <Input label="Zoho API Key" placeholder="Zoho-encrtoken ..." value={zohoKey} onChange={v => setZohoKey(v)} />
+          <Input label="From Email" placeholder="hello@yourdomain.com" value={zohoFrom} onChange={v => setZohoFrom(v)} />
+          <button onClick={async () => {
+            if (!zohoKey.trim()) return;
+            setZohoSaving(true);
+            try {
+              await api.connectZoho(zohoKey, zohoFrom);
+              setZohoConnected(true);
+              setFeedback({ type: 'success', message: 'Zoho connected!' });
+            } catch (err: any) {
+              setFeedback({ type: 'error', message: err.message });
+            } finally { setZohoSaving(false); }
+          }} disabled={zohoSaving || !zohoKey.trim()}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium disabled:opacity-50 flex items-center gap-2">
+            {zohoSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+            {zohoConnected ? 'Update Connection' : 'Connect Zoho'}
+          </button>
+        </div>
+      </Section>
+
       {/* Save */}
       <div className="flex justify-end">
         <button onClick={handleSave} disabled={saving}
@@ -185,7 +222,7 @@ export default function Settings() {
         <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide mb-4">System Status</h2>
         <div className="space-y-2 text-sm">
           <StatusRow label="Database" value="Connected (SQLite + WAL)" ok />
-          <StatusRow label="AI Model" value="Gemini 3 Flash" ok />
+          <StatusRow label="AI Model" value="Groq (Llama 3.3 70B)" ok />
           <StatusRow label="Email" value={settings.smtp_host ? `Configured (${settings.smtp_host})` : 'Preview Mode'} ok={!!settings.smtp_host} />
           <StatusRow label="Booking Link" value={settings.booking_link ? 'Configured' : 'Not set'} ok={!!settings.booking_link} />
           <StatusRow label="Business Info" value={settings.sender_name && settings.service_description ? 'Complete' : 'Incomplete'} ok={!!(settings.sender_name && settings.service_description)} />

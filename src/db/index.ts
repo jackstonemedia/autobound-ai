@@ -51,11 +51,47 @@ export function initDB() {
     )
   `);
 
+  // Campaigns table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      subject_template TEXT NOT NULL DEFAULT '',
+      body_template TEXT NOT NULL DEFAULT '',
+      status TEXT DEFAULT 'draft',
+      send_mode TEXT DEFAULT 'bulk',
+      drip_delay_minutes INTEGER DEFAULT 5,
+      zoho_campaign_id TEXT,
+      total_sent INTEGER DEFAULT 0,
+      total_opened INTEGER DEFAULT 0,
+      total_replied INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Campaign-Lead junction table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS campaign_leads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      campaign_id INTEGER NOT NULL,
+      lead_id INTEGER NOT NULL,
+      status TEXT DEFAULT 'pending',
+      sent_at DATETIME,
+      opened_at DATETIME,
+      FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+      FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+      UNIQUE(campaign_id, lead_id)
+    )
+  `);
+
   // Indexes
   db.exec(`CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_leads_website ON leads(website)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(lead_score)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_lead_id ON messages(lead_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_campaign_leads_campaign ON campaign_leads(campaign_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_campaign_leads_lead ON campaign_leads(lead_id)`);
 
   // Add columns if they don't exist (for existing DBs)
   try { db.exec(`ALTER TABLE leads ADD COLUMN follow_up_count INTEGER DEFAULT 0`); } catch { }

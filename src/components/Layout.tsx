@@ -1,9 +1,10 @@
-import { 
-  LayoutDashboard, 
-  Search, 
-  Users, 
-  Settings, 
-  MessageSquare 
+import {
+  LayoutDashboard,
+  Search,
+  Users,
+  Settings,
+  MessageSquare,
+  Megaphone
 } from "lucide-react";
 import { SidebarItem } from "./SidebarItem";
 import { Outlet } from "react-router-dom";
@@ -21,11 +22,12 @@ export default function Layout() {
             AutoBound
           </h1>
         </div>
-        
+
         <nav className="flex-1 p-4 space-y-1">
           <SidebarItem icon={LayoutDashboard} label="Dashboard" href="/" />
           <SidebarItem icon={Search} label="Discovery" href="/discovery" />
           <SidebarItem icon={Users} label="Leads" href="/leads" />
+          <SidebarItem icon={Megaphone} label="Campaigns" href="/campaigns" />
           <SidebarItem icon={MessageSquare} label="Conversations" href="/conversations" />
           <SidebarItem icon={Settings} label="Settings" href="/settings" />
         </nav>

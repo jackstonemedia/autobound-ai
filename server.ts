@@ -96,6 +96,15 @@ async function callGroq(prompt: string): Promise<string> {
   return data.choices?.[0]?.message?.content || "";
 }
 
+// Strip markdown code fences from AI responses before JSON parsing
+function extractJSON(text: string, type: 'object' | 'array' = 'object'): string | null {
+  // Remove markdown code fences like ```json ... ```
+  let cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+  const pattern = type === 'array' ? /\[.*\]/s : /\{.*\}/s;
+  const match = cleaned.match(pattern);
+  return match ? match[0] : null;
+}
+
 // Helper: get all settings as object
 function getAllSettings(): Record<string, string> {
   const rows = stmtGetAllSettings.all() as any[];
@@ -310,25 +319,25 @@ async function startServer() {
           ? `\nIMPORTANT CONTEXT: I sell "${serviceDescription}". Find businesses that would most likely NEED this service — look for signs they could benefit from it.`
           : '';
 
-        const prompt = `Find ${batchSize} ${industry} businesses in ${location} (batch ${batchNum} of ${batches} — return DIFFERENT businesses than previous batches).${serviceContext}
+        const prompt = `Find ${batchSize} ${industry} businesses in ${location} and surrounding cities/metro area (batch ${batchNum} of ${batches} — return DIFFERENT businesses than previous batches, expand to nearby cities if needed).${serviceContext}
         
 Return ONLY a JSON array of objects with these fields:
 - business_name (string)
 - website (valid URL, required — skip businesses without websites)
-- location (string)
+- location (string, include the actual city name)
 - rating (number 1-5)
 - review_count (number)
 
-Only include real businesses with real websites. No duplicates.`;
+IMPORTANT: If you can't find enough in ${location} itself, expand to nearby cities, suburbs, and the greater metro area. Only include real businesses with real websites. No duplicates.`;
 
         const text = await callGroq(prompt);
         if (!text) continue;
 
-        const jsonMatch = text.match(/\[.*\]/s);
-        if (!jsonMatch) continue;
+        const jsonStr = extractJSON(text, 'array');
+        if (!jsonStr) continue;
 
         try {
-          const leads = JSON.parse(jsonMatch[0]);
+          const leads = JSON.parse(jsonStr);
           allRaw.push(...leads);
 
           for (const lead of leads) {
@@ -384,10 +393,10 @@ Extract the following as JSON:
 }`;
 
       const analysisText = await callGroq(prompt);
-      const jsonMatch = analysisText?.match(/\{.*\}/s);
+      const jsonStr = extractJSON(analysisText || '');
 
-      if (jsonMatch) {
-        const data = JSON.parse(jsonMatch[0]);
+      if (jsonStr) {
+        const data = JSON.parse(jsonStr);
         const existingMeta = JSON.parse(lead.metadata || '{}');
         const newMeta = { ...existingMeta, ...data };
         const score = calculateLeadScore(lead, data);
@@ -430,9 +439,9 @@ Extract the following as JSON:
 Extract JSON: { "services": [], "tone": "string", "pain_points": [], "strengths": [], "contact_email": "or null", "contact_phone": "or null", "company_size": "small|medium|large", "tech_savviness": "low|medium|high" }`;
 
         const resultText = await callGroq(prompt);
-        const jsonMatch = resultText?.match(/\{.*\}/s);
-        if (jsonMatch) {
-          const data = JSON.parse(jsonMatch[0]);
+        const jsonStr = extractJSON(resultText || '');
+        if (jsonStr) {
+          const data = JSON.parse(jsonStr);
           const existingMeta = JSON.parse(lead.metadata || '{}');
           const newMeta = { ...existingMeta, ...data };
           const score = calculateLeadScore(lead, data);
@@ -505,9 +514,9 @@ RULES:
 Return ONLY JSON: { "subject": "...", "body": "..." }`;
 
       const resultText = await callGroq(prompt);
-      const jsonMatch = resultText?.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const emailContent = JSON.parse(jsonMatch[0]);
+      const jsonStr = extractJSON(resultText || '');
+      if (jsonStr) {
+        const emailContent = JSON.parse(jsonStr);
         res.json(emailContent);
       } else {
         throw new Error("Failed to generate email");
@@ -552,9 +561,9 @@ RULES:
 Return ONLY JSON: { "subject": "...", "body": "..." }`;
 
       const resultText = await callGroq(prompt);
-      const jsonMatch = resultText?.match(/\{.*\}/s);
-      if (jsonMatch) {
-        const emailContent = JSON.parse(jsonMatch[0]);
+      const jsonStr = extractJSON(resultText || '');
+      if (jsonStr) {
+        const emailContent = JSON.parse(jsonStr);
         res.json({ ...emailContent, followUpNumber: followUpNum });
       } else {
         throw new Error("Failed to generate follow-up");
@@ -647,9 +656,9 @@ Sign off: ${senderName}
 Return JSON: { "subject": "...", "body": "..." }`;
 
         const resultText = await callGroq(prompt);
-        const jsonMatch = resultText?.match(/\{.*\}/s);
-        if (jsonMatch) {
-          const emailContent = JSON.parse(jsonMatch[0]);
+        const jsonStr = extractJSON(resultText || '');
+        if (jsonStr) {
+          const emailContent = JSON.parse(jsonStr);
           const fullContent = `Subject: ${emailContent.subject}\n\n${emailContent.body}`;
           stmtInsertMessage.run(id, 'outbound', fullContent, 'pitch');
           stmtUpdateLeadStatus.run('emailed', id);
@@ -699,6 +708,292 @@ Return JSON: { "subject": "...", "body": "..." }`;
     } catch (error: any) {
       res.status(500).json({ error: "Failed to fetch stats" });
     }
+  });
+
+  // ===== CAMPAIGNS =====
+
+  // List campaigns
+  app.get("/api/campaigns", (_req, res) => {
+    try {
+      const campaigns = db.prepare(`
+        SELECT c.*, 
+          (SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = c.id) as lead_count,
+          (SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = c.id AND status = 'sent') as sent_count,
+          (SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = c.id AND status = 'opened') as opened_count,
+          (SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = c.id AND status = 'replied') as replied_count
+        FROM campaigns c ORDER BY c.created_at DESC
+      `).all();
+      res.json(campaigns);
+    } catch (error: any) {
+      res.status(500).json({ error: "Failed to fetch campaigns" });
+    }
+  });
+
+  // Create campaign
+  app.post("/api/campaigns", (req, res) => {
+    const { name, subject_template, body_template, send_mode, drip_delay_minutes } = req.body;
+    if (!name) return res.status(400).json({ error: "Campaign name is required" });
+    try {
+      const result = db.prepare(`
+        INSERT INTO campaigns (name, subject_template, body_template, send_mode, drip_delay_minutes)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(name, subject_template || '', body_template || '', send_mode || 'bulk', drip_delay_minutes || 5);
+      res.json({ success: true, id: result.lastInsertRowid });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Get campaign detail
+  app.get("/api/campaigns/:id", (req, res) => {
+    try {
+      const campaign = db.prepare("SELECT * FROM campaigns WHERE id = ?").get(req.params.id) as any;
+      if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+      const leads = db.prepare(`
+        SELECT cl.*, l.business_name, l.email, l.industry, l.location, l.lead_score, l.status as lead_status
+        FROM campaign_leads cl
+        JOIN leads l ON l.id = cl.lead_id
+        WHERE cl.campaign_id = ?
+        ORDER BY l.lead_score DESC
+      `).all(req.params.id);
+      res.json({ ...campaign, leads });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Update campaign
+  app.patch("/api/campaigns/:id", (req, res) => {
+    const { name, subject_template, body_template, status, send_mode, drip_delay_minutes } = req.body;
+    try {
+      db.prepare(`
+        UPDATE campaigns SET 
+          name = COALESCE(?, name), subject_template = COALESCE(?, subject_template),
+          body_template = COALESCE(?, body_template), status = COALESCE(?, status),
+          send_mode = COALESCE(?, send_mode), drip_delay_minutes = COALESCE(?, drip_delay_minutes),
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(name, subject_template, body_template, status, send_mode, drip_delay_minutes, req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Delete campaign
+  app.delete("/api/campaigns/:id", (req, res) => {
+    try {
+      db.prepare("DELETE FROM campaign_leads WHERE campaign_id = ?").run(req.params.id);
+      db.prepare("DELETE FROM campaigns WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Assign leads to campaign
+  app.post("/api/campaigns/:id/leads", (req, res) => {
+    const { leadIds } = req.body;
+    if (!leadIds || !Array.isArray(leadIds)) return res.status(400).json({ error: "leadIds array required" });
+    try {
+      const insert = db.prepare(`
+        INSERT OR IGNORE INTO campaign_leads (campaign_id, lead_id) VALUES (?, ?)
+      `);
+      const insertMany = db.transaction((ids: number[]) => {
+        let added = 0;
+        for (const lid of ids) {
+          const r = insert.run(req.params.id, lid);
+          if (r.changes > 0) added++;
+        }
+        return added;
+      });
+      const added = insertMany(leadIds);
+      res.json({ success: true, added });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Remove lead from campaign
+  app.delete("/api/campaigns/:id/leads/:leadId", (req, res) => {
+    try {
+      db.prepare("DELETE FROM campaign_leads WHERE campaign_id = ? AND lead_id = ?").run(req.params.id, req.params.leadId);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Helper: interpolate template variables
+  function interpolateTemplate(template: string, lead: any, settings: Record<string, string>): string {
+    const meta = JSON.parse(lead.metadata || '{}');
+    return template
+      .replace(/\{\{business_name\}\}/g, lead.business_name || '')
+      .replace(/\{\{industry\}\}/g, lead.industry || '')
+      .replace(/\{\{location\}\}/g, lead.location || '')
+      .replace(/\{\{sender_name\}\}/g, settings.sender_name || '')
+      .replace(/\{\{company_name\}\}/g, settings.company_name || '')
+      .replace(/\{\{service\}\}/g, settings.service_description || '')
+      .replace(/\{\{booking_link\}\}/g, settings.booking_link || '')
+      .replace(/\{\{pain_points\}\}/g, (meta.pain_points || []).join(', '))
+      .replace(/\{\{services\}\}/g, (meta.services || []).join(', '));
+  }
+
+  // Send campaign (bulk or drip)
+  app.post("/api/campaigns/:id/send", async (req, res) => {
+    const campaignId = req.params.id;
+    try {
+      const campaign = db.prepare("SELECT * FROM campaigns WHERE id = ?").get(campaignId) as any;
+      if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+
+      const pendingLeads = db.prepare(`
+        SELECT cl.*, l.* FROM campaign_leads cl
+        JOIN leads l ON l.id = cl.lead_id
+        WHERE cl.campaign_id = ? AND cl.status = 'pending'
+        ORDER BY l.lead_score DESC
+      `).all(campaignId) as any[];
+
+      if (pendingLeads.length === 0) return res.json({ success: true, sent: 0, message: "No pending leads" });
+
+      const settings = getAllSettings();
+      const transporter = getMailTransporter();
+      const zohoKey = settings.zoho_api_key;
+      const results = { sent: 0, failed: 0, errors: [] as string[] };
+
+      // Update campaign to active
+      db.prepare("UPDATE campaigns SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(campaignId);
+
+      for (let i = 0; i < pendingLeads.length; i++) {
+        const cl = pendingLeads[i];
+        try {
+          let subject = campaign.subject_template;
+          let body = campaign.body_template;
+
+          // If templates have content, interpolate. Otherwise generate with AI.
+          if (subject && body) {
+            subject = interpolateTemplate(subject, cl, settings);
+            body = interpolateTemplate(body, cl, settings);
+          } else {
+            // Auto-generate with AI
+            const meta = JSON.parse(cl.metadata || '{}');
+            const prompt = `Write a short cold email to ${cl.business_name} (${cl.industry}).
+Services: ${JSON.stringify(meta.services || [])}. Pain points: ${JSON.stringify(meta.pain_points || [])}.
+Sender: ${settings.sender_name || 'there'} from ${settings.company_name || 'our team'}, selling ${settings.service_description || 'our services'}.
+Tone: ${settings.email_tone || 'friendly'}. Under 150 words. ${settings.booking_link ? `CTA: Book call at ${settings.booking_link}` : 'Soft CTA.'}
+Sign off: ${settings.sender_name || 'Best'}
+Return JSON: { "subject": "...", "body": "..." }`;
+            const resultText = await callGroq(prompt);
+            const jsonStr = extractJSON(resultText || '');
+            if (jsonStr) {
+              const parsed = JSON.parse(jsonStr);
+              subject = parsed.subject;
+              body = parsed.body;
+            } else {
+              throw new Error("AI failed to generate email");
+            }
+          }
+
+          // Send via Zoho if connected
+          let emailSent = false;
+          if (zohoKey && cl.email) {
+            try {
+              const zohoRes = await fetch("https://api.zeptomail.com/v1.1/email", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Zoho-encrtoken ${zohoKey}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  from: { address: settings.smtp_user || settings.zoho_from_email || "noreply@example.com" },
+                  to: [{ email_address: { address: cl.email } }],
+                  subject: subject,
+                  textbody: body,
+                }),
+              });
+              emailSent = zohoRes.ok;
+              if (!zohoRes.ok) {
+                const errText = await zohoRes.text();
+                console.error(`[ZOHO ERROR] ${errText}`);
+              }
+            } catch (zohoErr: any) {
+              console.error(`[ZOHO SEND FAILED] ${zohoErr.message}`);
+            }
+          }
+          // Fallback to SMTP
+          else if (transporter && cl.email) {
+            try {
+              await transporter.sendMail({
+                from: settings.smtp_user,
+                to: cl.email,
+                subject: subject,
+                text: body,
+              });
+              emailSent = true;
+            } catch (smtpErr: any) {
+              console.error(`[SMTP FAILED] ${smtpErr.message}`);
+            }
+          }
+
+          // Record message
+          const fullContent = `Subject: ${subject}\n\n${body}`;
+          stmtInsertMessage.run(cl.lead_id, 'outbound', fullContent, 'campaign');
+
+          // Update campaign_lead status
+          db.prepare("UPDATE campaign_leads SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE campaign_id = ? AND lead_id = ?")
+            .run(campaignId, cl.lead_id);
+
+          // Update lead status
+          stmtUpdateLeadStatus.run('emailed', cl.lead_id);
+          results.sent++;
+
+          // Drip feed delay
+          if (campaign.send_mode === 'drip' && i < pendingLeads.length - 1) {
+            const delayMs = (campaign.drip_delay_minutes || 5) * 60 * 1000;
+            await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, 300000))); // max 5 min per email
+          }
+        } catch (err: any) {
+          results.failed++;
+          results.errors.push(`${cl.business_name}: ${err.message}`);
+          db.prepare("UPDATE campaign_leads SET status = 'failed' WHERE campaign_id = ? AND lead_id = ?")
+            .run(campaignId, cl.lead_id);
+        }
+      }
+
+      // Update campaign stats
+      db.prepare(`
+        UPDATE campaigns SET 
+          total_sent = (SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND status = 'sent'),
+          status = CASE WHEN (SELECT COUNT(*) FROM campaign_leads WHERE campaign_id = ? AND status = 'pending') = 0 THEN 'completed' ELSE status END,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(campaignId, campaignId, campaignId);
+
+      res.json({ success: true, ...results });
+    } catch (error: any) {
+      console.error("Campaign Send Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ===== ZOHO INTEGRATION =====
+  app.post("/api/zoho/connect", (req, res) => {
+    const { apiKey, fromEmail } = req.body;
+    if (!apiKey) return res.status(400).json({ error: "API key required" });
+    try {
+      stmtUpsertSetting.run('zoho_api_key', apiKey);
+      if (fromEmail) stmtUpsertSetting.run('zoho_from_email', fromEmail);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/zoho/status", (_req, res) => {
+    const settings = getAllSettings();
+    res.json({
+      connected: !!settings.zoho_api_key,
+      fromEmail: settings.zoho_from_email || null
+    });
   });
 
   // Vite middleware (dev) or static serving (production)
